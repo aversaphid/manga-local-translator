@@ -1,32 +1,34 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title Manga Local Translator - CUDA Backend Server
 
 echo ================================================================
 echo    Manga Local Translator - High Performance CUDA Server
-echo    Target: Windows 11 ^| NVIDIA RTX 40-Series (12GB VRAM)
+echo    Target: Windows 11 ^| NVIDIA RTX 40-Series
 echo ================================================================
 
 cd /d "%~dp0"
 
-:: Check if virtual environment exists
-if exist ".venv\Scripts\activate.bat" (
-    echo [INFO] Activating virtual environment (.venv)...
-    call .venv\Scripts\activate.bat
-) else if exist "venv\Scripts\activate.bat" (
-    echo [INFO] Activating virtual environment (venv)...
-    call venv\Scripts\activate.bat
-) else (
-    echo [WARNING] No virtual environment detected in backend/.
-    echo [WARNING] Running using global Python environment.
-    echo [TIP] To create a dedicated venv, run:
-    echo        python -m venv .venv
-    echo        .venv\Scripts\activate
-    echo        pip install -r requirements.txt
-    echo.
-)
+if exist ".venv\Scripts\activate.bat" goto ACTIVATE_DOT_VENV
+if exist "venv\Scripts\activate.bat" goto ACTIVATE_VENV
 
-:: Set CUDA environment variables
+echo [WARNING] No virtual environment detected in backend directory.
+echo [WARNING] Running using global Python environment.
+echo [TIP] Run setup_env.bat first to create the CUDA virtual environment.
+echo.
+goto START_SERVER
+
+:ACTIVATE_DOT_VENV
+echo [INFO] Activating virtual environment .venv ...
+call .venv\Scripts\activate.bat
+goto START_SERVER
+
+:ACTIVATE_VENV
+echo [INFO] Activating virtual environment venv ...
+call venv\Scripts\activate.bat
+goto START_SERVER
+
+:START_SERVER
 set CUDA_VISIBLE_DEVICES=0
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
@@ -42,4 +44,3 @@ if %ERRORLEVEL% neq 0 (
     echo [ERROR] Server terminated with error code %ERRORLEVEL%.
     pause
 )
-

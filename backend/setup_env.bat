@@ -8,13 +8,15 @@ echo ================================================================
 
 cd /d "%~dp0"
 
-if not exist ".venv" (
-    echo [1/3] Creating virtual environment (.venv)...
-    python -m venv .venv
-) else (
-    echo [1/3] Existing virtual environment found.
-)
+if not exist ".venv" goto CREATE_VENV
+echo [1/3] Existing virtual environment found.
+goto ACTIVATE_VENV
 
+:CREATE_VENV
+echo [1/3] Creating virtual environment .venv ...
+python -m venv .venv
+
+:ACTIVATE_VENV
 call .venv\Scripts\activate.bat
 
 echo [2/3] Upgrading pip, setuptools, and wheel...
@@ -32,4 +34,3 @@ echo    Setup Complete! You can now start the server with:
 echo    run_server.bat
 echo ================================================================
 pause
-
