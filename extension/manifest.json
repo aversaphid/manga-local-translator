@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Manga Local Translator (GPU CUDA)",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Real-time manga translation using a local CUDA GPU inference server with LaMa inpainting and comic typesetting.",
   "permissions": [
     "activeTab",
@@ -12,8 +12,7 @@
   "host_permissions": [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
-    "*://*.mangadex.org/*",
-    "*://*/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,8 +20,7 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.mangadex.org/*",
-        "*://*/*"
+        "<all_urls>"
       ],
       "all_frames": true,
       "match_about_blank": true,
