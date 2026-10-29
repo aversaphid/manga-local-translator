@@ -15,13 +15,15 @@ opencv-python>=4.9.0
 numpy>=1.24.0,<2.0.0
 
 # Deep Learning Framework
-# NOTE: Install PyTorch with CUDA 12 support via:
+# Install torch with CUDA 12 support via:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-torch>=2.2.0
+torch>=2.2.0,<2.6.0
 torchvision>=0.17.0
 
-# Manga OCR Engine (ViT based Japanese text recognition)
-# kha-white/manga-ocr
+# Manga OCR Engine & Compatible Transformer version
+# Pin transformers to 4.47.1 for stable PyTorch 2.5 CUDA support
+transformers==4.47.1
+tokenizers<0.22,>=0.21
 manga-ocr>=0.1.11
 
 # Inpainting & Model Inference
@@ -36,6 +38,5 @@ onnxruntime-gpu>=1.17.0
 llama-cpp-python>=0.2.56
 
 # Model Hub & Networking
-huggingface-hub>=0.21.0
+huggingface-hub>=0.24.0,<1.0
 requests>=2.31.0
-
