@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Model checkpoints and weights (downloaded locally, kept out of git)
+weights/
+*.pt
+*.pth
+*.onnx
+*.bin
+*.gguf
+*.safetensors
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Logs and temporary files
+*.log
+tmp/
+scratch/

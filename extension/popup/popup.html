@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manga Local Translator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-area">
+        <span class="icon-bolt">⚡</span>
+        <div>
+          <h1>Manga Local Translator</h1>
+          <p class="subtitle">Local CUDA GPU Inference Engine</p>
+        </div>
+      </div>
+      <div id="connection-badge" class="badge badge-offline">Offline</div>
+    </header>
+
+    <!-- GPU VRAM Monitor Card -->
+    <section class="card vram-card">
+      <div class="card-header">
+        <span class="label">Hardware & VRAM Monitor</span>
+        <span id="gpu-device-name" class="mono text-muted">Checking GPU...</span>
+      </div>
+      
+      <div class="vram-meter-container">
+        <div class="vram-meter-bar">
+          <div id="vram-fill-bar" class="vram-fill" style="width: 0%;"></div>
+        </div>
+        <div class="vram-labels mono">
+          <span id="vram-allocated-label">0.0 MB</span>
+          <span id="vram-budget-label">/ 10,240 MB (10 GB Limit)</span>
+        </div>
+      </div>
+
+      <div class="models-grid">
+        <div class="model-item">
+          <span class="model-name">Detector</span>
+          <span id="status-detector" class="model-status mono">...</span>
+        </div>
+        <div class="model-item">
+          <span class="model-name">Manga-OCR</span>
+          <span id="status-ocr" class="model-status mono">...</span>
+        </div>
+        <div class="model-item">
+          <span class="model-name">LaMa Inpaint</span>
+          <span id="status-inpaint" class="model-status mono">...</span>
+        </div>
+        <div class="model-item">
+          <span class="model-name">Local LLM</span>
+          <span id="status-llm" class="model-status mono">...</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings Section -->
+    <section class="card">
+      <div class="card-header">
+        <span class="label">Configuration</span>
+      </div>
+
+      <div class="form-group">
+        <label for="backend-url">Backend Server URL</label>
+        <div class="input-with-btn">
+          <input type="text" id="backend-url" value="http://localhost:8000" placeholder="http://localhost:8000" />
+          <button id="test-connection-btn" class="btn-secondary">Test</button>
+        </div>
+      </div>
+
+      <div class="form-group row-between">
+        <label for="auto-translate-toggle">Auto-translate Pages</label>
+        <label class="switch">
+          <input type="checkbox" id="auto-translate-toggle">
+          <span class="slider round"></span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label for="font-family-select">Comic Lettering Font</label>
+        <select id="font-family-select" class="form-select">
+          <option value="Anime Ace">Anime Ace (Classic Comic)</option>
+          <option value="Komika Axis">Komika Axis (Punchy SFX/Shout)</option>
+          <option value="CC Wild Words">CC Wild Words</option>
+          <option value="'Comic Sans MS', sans-serif">Comic Sans MS / System</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <div class="row-between">
+          <label for="font-scale-slider">Font Size Scale</label>
+          <span id="font-scale-val" class="mono">1.0x</span>
+        </div>
+        <input type="range" id="font-scale-slider" min="0.8" max="1.4" step="0.05" value="1.0" class="range-slider">
+      </div>
+
+      <div class="form-group">
+        <div class="row-between">
+          <label for="render-mode-select">Default Rendering Layer</label>
+        </div>
+        <select id="render-mode-select" class="form-select">
+          <option value="clean_and_text">Clean Inpaint + Lettering</option>
+          <option value="text_only">Lettering Overlay Only</option>
+          <option value="clean_only">Clean Inpainted Art Only</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Footer Actions -->
+    <footer class="footer">
+      <button id="save-btn" class="btn-primary">Save Settings</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,41 @@
+# Local GPU Manga Translation Pipeline - Requirements
+# Hardware target: Windows 11, NVIDIA RTX 40-Series (12GB VRAM), CUDA 12.x
+# Target persistent VRAM: Strictly under 10 GB
+
+# Web Framework & API Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+
+# Computer Vision & Image Processing
+Pillow>=10.2.0
+opencv-python>=4.9.0
+numpy>=1.24.0,<2.0.0
+
+# Deep Learning Framework
+# NOTE: Install PyTorch with CUDA 12 support via:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Manga OCR Engine (ViT based Japanese text recognition)
+# kha-white/manga-ocr
+manga-ocr>=0.1.11
+
+# Inpainting & Model Inference
+timm>=0.9.16
+scikit-image>=0.22.0
+onnxruntime-gpu>=1.17.0
+
+# Local LLM Quantization & Inference (Qwen2.5-7B-Instruct / Gemma-2-9B-It)
+# Install llama-cpp-python with CUDA support:
+# set CMAKE_ARGS="-DGGML_CUDA=on"
+# pip install llama-cpp-python>=0.2.56
+llama-cpp-python>=0.2.56
+
+# Model Hub & Networking
+huggingface-hub>=0.21.0
+requests>=2.31.0
+
