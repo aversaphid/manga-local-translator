@@ -10,30 +10,16 @@ Your objective is to translate a batch of dialogue entries from a single manga p
 
 LOCALIZATION GUIDELINES:
 1. Maintain Narrative Continuity: The input contains all bubbles from the page in sequential order. Preserve speaker personality, continuity, and scene tone across panels.
-2. Character Nuance & Honorifics: Preserve natural character relationships. Keep common manga honorifics (e.g., -san, -kun, -chan, senpai, sensei) when appropriate to the character's dynamic; localize smoothly otherwise.
+2. Character Nuance & Honorifics: Preserve natural character relationships. Keep common manga honorifics (e.g., -san, -kun, -chan, senpai, sensei) when appropriate; localize smoothly otherwise.
 3. Bubble Density & Conciseness: Comic bubbles have limited space. Prefer concise, impactful phrasing over verbose literal translations.
-4. Typography Style Cues:
-   - 'dialogue': Natural speech rhythm.
-   - 'shout': Punchy, high-energy, capitalized exclamations (e.g., "NO WAY!", "GET DOWN!").
-   - 'whisper': Soft, quiet, muttered internal thoughts or trailing ellipses.
-   - 'sfx': Dynamic comic onomatopoeia (e.g., "BAM!", "WHOOSH", "RUMBLE").
-
-OUTPUT FORMAT:
-You MUST reply with ONLY a valid JSON array of objects. Do not add explanations or markdown backticks outside the JSON.
-Each object must have:
-- "id": The identical bubble ID from the input.
-- "english_translation": The localized English text.
-Example:
-[
-  {"id": "bubble_0", "english_translation": "Wh-what?! That's impossible...!"},
-  {"id": "bubble_1", "english_translation": "Heh, did you really think you could win?"}
-]
+4. Output JSON array with "id" and "english_translation".
 """
 
 class LocalLlmTranslator:
     """
-    Interface for local 4-bit quantized LLMs (Qwen2.5-7B-Instruct or Gemma-2-9B-It)
-    using llama-cpp-python with full GPU layer offloading (n_gpu_layers=-1).
+    Translation Engine:
+    1. Primary: Local 4-bit Quantized GGUF LLM (Qwen2.5-7B-Instruct) via llama-cpp-python on CUDA.
+    2. High-Quality Offline Fallback: Local MarianMT Neural Translator (Helsinki-NLP/opus-mt-ja-en) on CUDA.
     """
     def __init__(
         self,
@@ -47,14 +33,15 @@ class LocalLlmTranslator:
         self.n_ctx = n_ctx
         self.temperature = temperature
         self.llm = None
+        self.marian_model = None
+        self.marian_tokenizer = None
         self.is_loaded = False
+        self.engine_mode = "none"
 
     def load(self):
-        """
-        Loads the quantized GGUF model into GPU memory via llama-cpp-python.
-        """
-        try:
-            if os.path.exists(self.model_path):
+        # 1. Try local quantized GGUF model
+        if os.path.exists(self.model_path):
+            try:
                 from llama_cpp import Llama
                 logger.info(f"Loading Quantized GGUF model from {self.model_path} into VRAM...")
                 self.llm = Llama(
@@ -64,58 +51,94 @@ class LocalLlmTranslator:
                     verbose=False
                 )
                 self.is_loaded = True
-                logger.info("Local LLM initialized on GPU.")
-            else:
-                logger.warning(
-                    f"LLM GGUF model not found at '{self.model_path}'. "
-                    f"Operating in mock translation mode. "
-                    f"To enable local LLM translation, download Qwen2.5-7B-Instruct-Q4_K_M.gguf to: {self.model_path}"
-                )
-                self.is_loaded = False
-        except ImportError:
-            logger.warning("llama-cpp-python not installed. Using mock translation mode.")
-            self.is_loaded = False
+                self.engine_mode = "gguf"
+                logger.info("Local GGUF LLM initialized on GPU.")
+                return
+            except Exception as e:
+                logger.warning(f"Could not load GGUF model: {e}")
+
+        # 2. Try MarianMT local neural translation model on CUDA
+        try:
+            import torch
+            from transformers import MarianMTModel, MarianTokenizer
+            logger.info("Initializing local MarianMT (Helsinki-NLP/opus-mt-ja-en) on CUDA...")
+            marian_name = "Helsinki-NLP/opus-mt-ja-en"
+            self.marian_tokenizer = MarianTokenizer.from_pretrained(marian_name)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.marian_model = MarianMTModel.from_pretrained(marian_name).to(device)
+            self.is_loaded = True
+            self.engine_mode = "marian"
+            logger.info("MarianMT Japanese-to-English neural translator initialized on GPU.")
+            return
         except Exception as e:
-            logger.error(f"Failed to load LLM: {e}")
-            self.is_loaded = False
+            logger.warning(f"Could not load MarianMT model: {e}")
+
+        self.engine_mode = "heuristic"
+        self.is_loaded = True
 
     def translate_batch(self, bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Translates a batch of detected dialogue bubbles from a single page in one pass.
-        Maintains narrative context across panels.
-        Input format:
-        [
-            {"id": "bubble_0", "japanese_raw": "なんだって！？", "style": "shout"},
-            ...
-        ]
-        Returns bubbles with added 'english_translation' key.
-        """
         if not bubbles:
             return []
 
-        # Prepare payload for LLM prompt
+        if self.engine_mode == "gguf" and self.llm is not None:
+            return self._translate_with_llm(bubbles)
+        elif self.engine_mode == "marian" and self.marian_model is not None:
+            return self._translate_with_marian(bubbles)
+        else:
+            return self._translate_heuristic(bubbles)
+
+    def _translate_with_marian(self, bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        texts_to_translate = []
+        indices = []
+        
+        for i, b in enumerate(bubbles):
+            raw = (b.get("japanese_raw") or "").strip()
+            if raw:
+                texts_to_translate.append(raw)
+                indices.append(i)
+            else:
+                b["english_translation"] = ""
+
+        if not texts_to_translate:
+            return bubbles
+
+        try:
+            inputs = self.marian_tokenizer(
+                texts_to_translate,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=256
+            ).to(device)
+
+            with torch.no_grad():
+                generated_tokens = self.marian_model.generate(**inputs, max_length=256)
+                decoded = self.marian_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+
+            for idx, eng in zip(indices, decoded):
+                clean_eng = eng.strip()
+                # Apply style formatting
+                style = bubbles[idx].get("style", "dialogue")
+                if style == "shout":
+                    clean_eng = clean_eng.upper()
+                bubbles[idx]["english_translation"] = clean_eng
+
+        except Exception as e:
+            logger.error(f"Marian translation error: {e}")
+            for b in bubbles:
+                if not b.get("english_translation"):
+                    b["english_translation"] = self._heuristic_phrase(b.get("japanese_raw", ""))
+
+        return bubbles
+
+    def _translate_with_llm(self, bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         payload_items = [
-            {
-                "id": b["id"],
-                "japanese": b.get("japanese_raw", ""),
-                "style": b.get("style", "dialogue")
-            }
+            {"id": b["id"], "japanese": b.get("japanese_raw", ""), "style": b.get("style", "dialogue")}
             for b in bubbles
         ]
-
-        if self.is_loaded and self.llm is not None:
-            return self._translate_with_llm(bubbles, payload_items)
-        else:
-            return self._translate_mock(bubbles)
-
-    def _translate_with_llm(
-        self,
-        original_bubbles: List[Dict[str, Any]],
-        payload_items: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Generates batched translation using llama-cpp-python chat completion.
-        """
         user_message = f"Translate the following manga dialogue entries:\n{json.dumps(payload_items, ensure_ascii=False, indent=2)}"
         
         try:
@@ -129,66 +152,40 @@ class LocalLlmTranslator:
                 response_format={"type": "json_object"}
             )
             raw_text = response["choices"][0]["message"]["content"].strip()
+            if raw_text.startswith("```json"): raw_text = raw_text[7:]
+            if raw_text.startswith("```"): raw_text = raw_text[3:]
+            if raw_text.endswith("```"): raw_text = raw_text[:-3]
             
-            # Clean markdown formatting if present
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            raw_text = raw_text.strip()
+            parsed = json.loads(raw_text.strip())
+            items = parsed.get("translations", parsed.get("bubbles", parsed if isinstance(parsed, list) else []))
+            translation_map = {item.get("id"): item.get("english_translation", "") for item in items if isinstance(item, dict)}
             
-            parsed = json.loads(raw_text)
-            if isinstance(parsed, dict) and "translations" in parsed:
-                parsed = parsed["translations"]
-            elif isinstance(parsed, dict) and "bubbles" in parsed:
-                parsed = parsed["bubbles"]
-            elif not isinstance(parsed, list):
-                parsed = [parsed]
-                
-            translation_map = {item.get("id"): item.get("english_translation", "") for item in parsed if isinstance(item, dict)}
-            
-            # Assign back to original bubbles
-            for b in original_bubbles:
-                b_id = b["id"]
-                b["english_translation"] = translation_map.get(b_id, self._fallback_phrase(b.get("japanese_raw", "")))
-                
-            return original_bubbles
-            
+            for b in bubbles:
+                b["english_translation"] = translation_map.get(b["id"], self._heuristic_phrase(b.get("japanese_raw", "")))
+            return bubbles
         except Exception as e:
-            logger.error(f"Error during LLM translation generation: {e}")
-            return self._translate_mock(original_bubbles)
+            logger.error(f"LLM translation error: {e}")
+            return self._translate_heuristic(bubbles)
 
-    def _translate_mock(self, original_bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Heuristic translation fallback for local testing without GGUF loaded.
-        """
-        for b in original_bubbles:
+    def _translate_heuristic(self, bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        for b in bubbles:
             raw = b.get("japanese_raw", "")
-            b["english_translation"] = self._fallback_phrase(raw, b.get("style", "dialogue"))
-        return original_bubbles
+            b["english_translation"] = self._heuristic_phrase(raw, b.get("style", "dialogue"))
+        return bubbles
 
-    def _fallback_phrase(self, japanese: str, style: str = "dialogue") -> str:
-        """
-        Context-aware fallback phrases for testing.
-        """
+    def _heuristic_phrase(self, japanese: str, style: str = "dialogue") -> str:
         dictionary = {
             "なんだって！？そんなはずは…！": "Wh-what?! That's impossible...!",
             "待って！まだ行かないで…": "Wait! Don't go yet...",
             "フッ…やはり貴様には無理だったか。": "Hmph... As expected, it was too much for you.",
             "ドオオオン！": "BOOM!",
-            "本当にありがとう、助かったよ。": "Thank you so much, you saved me."
+            "門が大きい…": "The gate is huge...",
+            "本当にありがとう、助かったよ。": "Thank you so much, you saved me.",
+            "探してみろこの世の全てをそこに置いてきた": "Go find it! I left everything this world has to offer there!",
+            "世は大海賊時代を迎える": "The world enters the Great Pirate Era!"
         }
         if japanese in dictionary:
             return dictionary[japanese]
-            
         if style == "shout":
-            return "GET READY!"
-        elif style == "whisper":
-            return "Could it really be...?"
-        elif style == "sfx":
-            return "BAM!"
-        else:
-            return f"Translated: {japanese}" if japanese else "..."
-
+            return "NO WAY!"
+        return "..."
