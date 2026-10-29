@@ -20,6 +20,11 @@
       <div id="connection-badge" class="badge badge-offline">Offline</div>
     </header>
 
+    <!-- Quick Action -->
+    <button id="popup-translate-btn" class="btn-primary" style="padding: 10px; font-size: 14px; margin-bottom: 2px;">
+      ⚡ Translate Active Tab
+    </button>
+
     <!-- GPU VRAM Monitor Card -->
     <section class="card vram-card">
       <div class="card-header">
@@ -66,7 +71,7 @@
       <div class="form-group">
         <label for="backend-url">Backend Server URL</label>
         <div class="input-with-btn">
-          <input type="text" id="backend-url" value="http://localhost:8000" placeholder="http://localhost:8000" />
+          <input type="text" id="backend-url" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000" />
           <button id="test-connection-btn" class="btn-secondary">Test</button>
         </div>
       </div>
@@ -118,4 +123,3 @@
   <script src="popup.js"></script>
 </body>
 </html>
-

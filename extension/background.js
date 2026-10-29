@@ -1,15 +1,14 @@
 /**
  * Background Service Worker (Manifest V3)
- * Handles cross-origin image fetching to bypass canvas tainting/CORS,
- * viewport screenshot capture for DRM/WebGL/iframe manga readers,
- * local server communication, and persistent user settings.
+ * Handles cross-origin image fetching, tab screenshot capture (via "tabs" permission),
+ * local server communication with IPv4/localhost fallback, and persistent user settings.
  */
 
 const DEFAULT_SETTINGS = {
-  backendUrl: "http://localhost:8000",
+  backendUrl: "http://127.0.0.1:8000",
   autoTranslate: false,
   overlayOpacity: 1.0,
-  renderMode: "clean_and_text", // 'clean_and_text', 'text_only', 'clean_only'
+  renderMode: "clean_and_text",
   fontFamily: "Anime Ace",
   fontScale: 1.0
 };
@@ -33,13 +32,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CAPTURE_VISIBLE_TAB") {
-    chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
-      if (chrome.runtime.lastError || !dataUrl) {
+    const targetWindowId = sender.tab ? sender.tab.windowId : null;
+    chrome.tabs.captureVisibleTab(targetWindowId, { format: "png" }, (dataUrl) => {
+      const lastErr = chrome.runtime.lastError;
+      if (lastErr || !dataUrl) {
+        console.error("[Background] Capture tab error:", lastErr);
         sendResponse({
           success: false,
-          error: chrome.runtime.lastError?.message || "Failed to capture visible tab."
+          error: lastErr?.message || "Failed to capture visible tab."
         });
       } else {
+        console.log("[Background] Tab captured successfully. Length:", dataUrl.length);
         sendResponse({ success: true, dataUrl });
       }
     });
@@ -47,14 +50,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "TRANSLATE_PAGE_API") {
-    translatePagePayload(message.backendUrl || "http://localhost:8000", message.payload)
+    translatePagePayload(message.backendUrl || "http://127.0.0.1:8000", message.payload)
       .then((data) => sendResponse({ success: true, data }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
   if (message.type === "CHECK_HEALTH") {
-    checkBackendHealth(message.backendUrl || "http://localhost:8000")
+    checkBackendHealth(message.backendUrl || "http://127.0.0.1:8000")
       .then((data) => sendResponse({ success: true, data }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -62,8 +65,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /**
- * Fetches an image URL in the background service worker where CORS rules
- * are permissive (via host permissions), converting it to a Base64 Data URI.
+ * Fetches an image URL in the background worker and converts to Base64.
  */
 async function fetchImageAsBase64(url) {
   try {
@@ -85,34 +87,66 @@ async function fetchImageAsBase64(url) {
 }
 
 /**
- * Sends image payload to local FastAPI GPU backend.
+ * Sends image payload to local FastAPI GPU backend with automatic localhost/127.0.0.1 fallback.
  */
 async function translatePagePayload(backendUrl, payload) {
-  const endpoint = `${backendUrl.replace(/\/+$/, "")}/translate-page`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Server returned ${response.status}: ${errorText}`);
+  const urlsToTry = [backendUrl];
+  if (backendUrl.includes("localhost")) {
+    urlsToTry.push(backendUrl.replace("localhost", "127.0.0.1"));
+  } else if (backendUrl.includes("127.0.0.1")) {
+    urlsToTry.push(backendUrl.replace("127.0.0.1", "localhost"));
   }
 
-  return await response.json();
+  let lastError = null;
+  for (const baseUrl of urlsToTry) {
+    const endpoint = `${baseUrl.replace(/\/+$/, "")}/translate-page`;
+    try {
+      console.log("[Background] Sending translation request to:", endpoint);
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server returned HTTP ${response.status}: ${errorText}`);
+      }
+
+      return await response.json();
+    } catch (e) {
+      console.warn(`[Background] Failed request to ${baseUrl}:`, e);
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error("Failed to connect to backend translation server.");
 }
 
 /**
  * Checks GPU health and VRAM status.
  */
 async function checkBackendHealth(backendUrl) {
-  const endpoint = `${backendUrl.replace(/\/+$/, "")}/health`;
-  const response = await fetch(endpoint);
-  if (!response.ok) {
-    throw new Error(`Health check returned ${response.status}`);
+  const urlsToTry = [backendUrl];
+  if (backendUrl.includes("localhost")) {
+    urlsToTry.push(backendUrl.replace("localhost", "127.0.0.1"));
+  } else if (backendUrl.includes("127.0.0.1")) {
+    urlsToTry.push(backendUrl.replace("127.0.0.1", "localhost"));
   }
-  return await response.json();
+
+  for (const baseUrl of urlsToTry) {
+    const endpoint = `${baseUrl.replace(/\/+$/, "")}/health`;
+    try {
+      const response = await fetch(endpoint);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      // Continue to next fallback
+    }
+  }
+
+  throw new Error("Cannot connect to translation server on localhost or 127.0.0.1:8000.");
 }

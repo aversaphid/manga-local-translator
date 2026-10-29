@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const statusInpaint = document.getElementById("status-inpaint");
   const statusLlm = document.getElementById("status-llm");
 
+  const popupTranslateBtn = document.getElementById("popup-translate-btn");
   const autoTranslateToggle = document.getElementById("auto-translate-toggle");
   const fontFamilySelect = document.getElementById("font-family-select");
   const fontScaleSlider = document.getElementById("font-scale-slider");
@@ -20,7 +21,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Load existing settings
   const { settings } = await chrome.storage.local.get("settings");
   if (settings) {
-    backendUrlInput.value = settings.backendUrl || "http://localhost:8000";
+    backendUrlInput.value = settings.backendUrl || "http://127.0.0.1:8000";
     autoTranslateToggle.checked = Boolean(settings.autoTranslate);
     fontFamilySelect.value = settings.fontFamily || "Anime Ace";
     fontScaleSlider.value = settings.fontScale || 1.0;
@@ -84,6 +85,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     queryHealth(backendUrlInput.value);
   });
 
+  // Quick Translate Button in Popup
+  if (popupTranslateBtn) {
+    popupTranslateBtn.addEventListener("click", async () => {
+      popupTranslateBtn.textContent = "Sending to tab...";
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && tab.id) {
+        chrome.scripting ? 
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              const btn = document.getElementById("mt-translate-btn");
+              if (btn) btn.click();
+            }
+          }) : 
+          chrome.tabs.executeScript(tab.id, {
+            code: "document.getElementById('mt-translate-btn')?.click();"
+          });
+        popupTranslateBtn.textContent = "Translating Tab ✓";
+        setTimeout(() => {
+          popupTranslateBtn.textContent = "⚡ Translate Active Tab";
+        }, 1500);
+      }
+    });
+  }
+
   // Save Settings
   saveBtn.addEventListener("click", async () => {
     const updatedSettings = {
@@ -104,4 +130,3 @@ document.addEventListener("DOMContentLoaded", async () => {
     }, 1200);
   });
 });
-
