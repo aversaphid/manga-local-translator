@@ -78,34 +78,53 @@ document.addEventListener("DOMContentLoaded", async () => {
     );
   }
 
-  // Initial health check
   queryHealth(backendUrlInput.value);
 
   testBtn.addEventListener("click", () => {
     queryHealth(backendUrlInput.value);
   });
 
-  // Quick Translate Button in Popup
+  // Direct activeTab Screenshot Translation from Popup
+  // When clicked here, Chrome gives 100% guaranteed activeTab permission!
   if (popupTranslateBtn) {
     popupTranslateBtn.addEventListener("click", async () => {
-      popupTranslateBtn.textContent = "Sending to tab...";
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && tab.id) {
-        chrome.scripting ? 
-          chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => {
-              const btn = document.getElementById("mt-translate-btn");
-              if (btn) btn.click();
+      popupTranslateBtn.textContent = "📸 Capturing tab...";
+      popupTranslateBtn.disabled = true;
+
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.id) {
+          throw new Error("No active manga tab found.");
+        }
+
+        chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
+          if (chrome.runtime.lastError || !dataUrl) {
+            const err = chrome.runtime.lastError?.message || "Failed to capture.";
+            alert("Capture error: " + err);
+            popupTranslateBtn.textContent = "⚡ Translate Active Tab";
+            popupTranslateBtn.disabled = false;
+            return;
+          }
+
+          popupTranslateBtn.textContent = "⚡ Sending to GPU...";
+
+          chrome.tabs.sendMessage(
+            tab.id,
+            { type: "TRANSLATE_FROM_SCREENSHOT", screenshotUrl: dataUrl },
+            (res) => {
+              popupTranslateBtn.textContent = "Translated ✓";
+              setTimeout(() => {
+                popupTranslateBtn.textContent = "⚡ Translate Active Tab";
+                popupTranslateBtn.disabled = false;
+                window.close();
+              }, 1200);
             }
-          }) : 
-          chrome.tabs.executeScript(tab.id, {
-            code: "document.getElementById('mt-translate-btn')?.click();"
-          });
-        popupTranslateBtn.textContent = "Translating Tab ✓";
-        setTimeout(() => {
-          popupTranslateBtn.textContent = "⚡ Translate Active Tab";
-        }, 1500);
+          );
+        });
+      } catch (err) {
+        alert(err.message);
+        popupTranslateBtn.textContent = "⚡ Translate Active Tab";
+        popupTranslateBtn.disabled = false;
       }
     });
   }
