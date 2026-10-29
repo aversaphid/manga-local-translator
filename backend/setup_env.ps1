@@ -24,3 +24,4 @@ Write-Host "Installing backend dependencies from requirements.txt..." -Foregroun
 & $venvPython -m pip install -r requirements.txt
 
 Write-Host "`nSetup complete! You can now start the server with: .\run_server.ps1" -ForegroundColor Green
+

@@ -1,18 +1,23 @@
 /**
  * Content Script (content.js)
- * Non-destructive manga reader observer and overlay manager.
- * Intercepts reader images/canvases, handles cross-origin conversion via background worker,
- * synchronizes with ResizeObserver, and hosts the floating control dock.
+ * High-compatibility manga reader observer and overlay manager.
+ * Supports:
+ * - Traditional <img> readers (MangaDex, etc.)
+ * - HTML5 Canvas & WebGL readers (MediaDo MDViewer, Bibi, Voyager, etc.)
+ * - Iframe-embedded readers (cross-origin / same-origin bibi-frame)
+ * - Viewport tab screenshot cropping fallback (100% DRM & CORS proof)
+ * - Interactive element picker tool
  */
 
 (function () {
   "use strict";
 
-  // Prevent multiple injections
   if (window.__MANGA_TRANSLATOR_INJECTED__) return;
   window.__MANGA_TRANSLATOR_INJECTED__ = true;
 
+  const isTopWindow = (window === window.top);
   const renderer = new window.MangaRenderer();
+
   let settings = {
     backendUrl: "http://localhost:8000",
     autoTranslate: false,
@@ -22,9 +27,9 @@
     fontScale: 1.0
   };
 
-  // State cache of translated targets: targetElement -> { overlayWrapper, canvas, data }
   const activeOverlays = new Map();
-  const processedImages = new WeakSet();
+  const processedElements = new WeakSet();
+  let isPickingElement = false;
 
   // Load persistent settings
   chrome.storage.local.get("settings", (res) => {
@@ -36,7 +41,7 @@
     }
   });
 
-  // Listen for storage changes from popup
+  // Storage listener
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes.settings) {
       settings = { ...settings, ...changes.settings.newValue };
@@ -47,17 +52,16 @@
     }
   });
 
-  /**
-   * Initializes page observer and floating dock UI.
-   */
   function init() {
-    createFloatingDock();
+    if (isTopWindow) {
+      createFloatingDock();
+    }
     setupReaderObserver();
     checkBackendStatus();
   }
 
   // ==========================================
-  // DOM Observer & Target Detection
+  // Universal Manga Element Discovery
   // ==========================================
 
   function setupReaderObserver() {
@@ -70,45 +74,86 @@
       subtree: true
     });
 
-    // Initial pass
     findAndProcessMangaElements();
 
-    // Reposition overlays on window scroll or resize
     window.addEventListener("scroll", updateAllOverlayPositions, { passive: true });
     window.addEventListener("resize", updateAllOverlayPositions, { passive: true });
   }
 
   /**
-   * Identifies candidate manga reader images or canvases on the page.
-   * Matches MangaDex, generic comic viewers, or images with typical page dimensions.
+   * Recursively finds visible manga candidate elements in a document and its child iframes.
    */
-  function findAndProcessMangaElements() {
-    // Selectors targeting common manga reader frameworks (MangaDex, MangaReader, Canvas viewers)
+  function findMangaReaderCandidates(doc = document) {
+    const candidates = [];
     const selectors = [
-      ".md-reader img",
-      ".reader--page img",
+      "iframe.bibi-frame",
+      "iframe[src*='viewer']",
+      "iframe[class*='viewer']",
+      "iframe",
+      "canvas:not(.manga-translator-overlay-canvas)",
       ".page-image img",
-      "img[src*='mangadex']",
+      ".reader--page img",
+      ".md-reader img",
       "img[src*='chapter']",
       "img[src*='manga']",
+      "img[src*='page']",
+      "img[src*='blob:']",
       ".comic-page img",
-      "canvas.reader-canvas"
+      "img"
     ];
 
-    let candidates = Array.from(document.querySelectorAll(selectors.join(",")));
+    const elements = Array.from(doc.querySelectorAll(selectors.join(",")));
 
-    // Fallback: search for large vertical images typical of manga pages (aspect ratio > 1.2, height > 600px)
-    if (candidates.length === 0) {
-      const allImages = Array.from(document.querySelectorAll("img"));
-      candidates = allImages.filter((img) => {
-        const rect = img.getBoundingClientRect();
-        return rect.height >= 500 && (rect.height / Math.max(rect.width, 1)) >= 1.1;
-      });
-    }
+    elements.forEach((el) => {
+      // Exclude overlay elements
+      if (
+        el.closest(".manga-translator-overlay-wrapper") ||
+        el.closest("#manga-translator-floating-dock")
+      ) {
+        return;
+      }
+
+      // Check if iframe is same-origin and accessible
+      if (el.tagName.toLowerCase() === "iframe") {
+        try {
+          if (el.contentDocument && el.contentDocument.body) {
+            const innerCandidates = findMangaReaderCandidates(el.contentDocument);
+            if (innerCandidates.length > 0) {
+              candidates.push(...innerCandidates);
+              return;
+            }
+          }
+        } catch (e) {
+          // Cross-origin iframe: treat iframe itself as reader target
+        }
+      }
+
+      const rect = el.getBoundingClientRect();
+      const area = rect.width * rect.height;
+
+      // Filter out small icons/avatars (minimum 180x180 px and visible)
+      if (
+        rect.width >= 180 &&
+        rect.height >= 180 &&
+        area >= 40000 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight &&
+        rect.right > 0 &&
+        rect.left < window.innerWidth
+      ) {
+        candidates.push(el);
+      }
+    });
+
+    return candidates;
+  }
+
+  function findAndProcessMangaElements() {
+    const candidates = findMangaReaderCandidates();
 
     candidates.forEach((el) => {
-      if (!processedImages.has(el)) {
-        processedImages.add(el);
+      if (!processedElements.has(el)) {
+        processedElements.add(el);
         attachResizeObserver(el);
         if (settings.autoTranslate) {
           translateElement(el);
@@ -117,10 +162,6 @@
     });
   }
 
-  /**
-   * Attaches a ResizeObserver to synchronize overlay canvas geometry
-   * with the host image without disturbing parent DOM flow.
-   */
   function attachResizeObserver(targetEl) {
     const ro = new ResizeObserver(() => {
       const overlayData = activeOverlays.get(targetEl);
@@ -168,10 +209,12 @@
     wrapper.style.height = `${rect.height}px`;
 
     const dpr = window.devicePixelRatio || 1;
-    // Set internal canvas resolution
-    if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
-      canvas.width = Math.floor(rect.width * dpr);
-      canvas.height = Math.floor(rect.height * dpr);
+    const targetW = Math.max(1, Math.floor(rect.width * dpr));
+    const targetH = Math.max(1, Math.floor(rect.height * dpr));
+
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
       const ctx = canvas.getContext("2d");
       ctx.scale(dpr, dpr);
     }
@@ -182,7 +225,6 @@
       if (document.body.contains(targetEl)) {
         positionOverlay(targetEl, wrapper, canvas);
       } else {
-        // Target element was removed; clean up overlay
         wrapper.remove();
         activeOverlays.delete(targetEl);
       }
@@ -206,44 +248,120 @@
   }
 
   // ==========================================
-  // Image Extraction & Translation Pipeline
+  // Image Extraction (DOM + Tab Capture Fallback)
   // ==========================================
 
-  async function getImagePayload(targetEl) {
-    // 1. If element is a canvas
-    if (targetEl.tagName.toLowerCase() === "canvas") {
-      return targetEl.toDataURL("image/png");
-    }
+  /**
+   * Captures the visible element area from a full-tab screenshot.
+   * Completely bypasses CORS, WebGL cleared buffers, and iframe cross-origin boundaries.
+   */
+  async function captureElementViaScreenshot(targetEl) {
+    const dock = document.getElementById("manga-translator-floating-dock");
+    const overlays = Array.from(document.querySelectorAll(".manga-translator-overlay-wrapper"));
 
-    // 2. If element is an <img>
-    const src = targetEl.currentSrc || targetEl.src;
-    if (!src) throw new Error("Image element has no valid src.");
+    // Temporarily hide overlays and dock so they are not captured
+    overlays.forEach((o) => (o.style.visibility = "hidden"));
+    if (dock) dock.style.visibility = "hidden";
 
-    if (src.startsWith("data:")) {
-      return src;
-    }
+    // Small delay to ensure browser paints before screenshot
+    await new Promise((r) => setTimeout(r, 60));
 
-    // Attempt direct canvas draw if same-origin
     try {
-      const c = document.createElement("canvas");
-      c.width = targetEl.naturalWidth || targetEl.width;
-      c.height = targetEl.naturalHeight || targetEl.height;
-      const ctx = c.getContext("2d");
-      ctx.drawImage(targetEl, 0, 0);
-      return c.toDataURL("image/png");
-    } catch (e) {
-      // CORS tainted canvas; delegate fetch to background worker
-      console.log("[Content] Canvas tainted by CORS. Fetching via background service worker...");
-      const res = await chrome.runtime.sendMessage({
-        type: "FETCH_IMAGE_AS_BASE64",
-        url: src
-      });
-      if (res && res.success) {
-        return res.base64;
+      const response = await chrome.runtime.sendMessage({ type: "CAPTURE_VISIBLE_TAB" });
+      if (!response || !response.success || !response.dataUrl) {
+        throw new Error(response?.error || "Tab screenshot capture failed.");
       }
-      throw new Error(res?.error || "Failed to fetch image via background worker.");
+
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = response.dataUrl;
+      });
+
+      const rect = targetEl.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      // Crop coordinates clamped to screenshot boundaries
+      const sx = Math.max(0, Math.floor(rect.left * dpr));
+      const sy = Math.max(0, Math.floor(rect.top * dpr));
+      const sw = Math.min(Math.floor(rect.width * dpr), img.width - sx);
+      const sh = Math.min(Math.floor(rect.height * dpr), img.height - sy);
+
+      if (sw <= 0 || sh <= 0) {
+        throw new Error("Target element has zero visible dimensions.");
+      }
+
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = sw;
+      cropCanvas.height = sh;
+      const cropCtx = cropCanvas.getContext("2d");
+      cropCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      return cropCanvas.toDataURL("image/png");
+    } finally {
+      // Restore overlays and dock
+      overlays.forEach((o) => (o.style.visibility = ""));
+      if (dock) dock.style.visibility = "";
     }
   }
+
+  async function getImagePayload(targetEl) {
+    const tag = targetEl.tagName.toLowerCase();
+
+    // 1. Canvas element: attempt direct toDataURL, fallback to screenshot if blank/WebGL
+    if (tag === "canvas") {
+      try {
+        const dataUrl = targetEl.toDataURL("image/png");
+        // Verify canvas is not a blank 0-byte or cleared WebGL buffer
+        if (dataUrl && dataUrl.length > 2500) {
+          return dataUrl;
+        }
+      } catch (e) {
+        // Tainted canvas or WebGL error
+      }
+      return await captureElementViaScreenshot(targetEl);
+    }
+
+    // 2. Image element
+    if (tag === "img") {
+      const src = targetEl.currentSrc || targetEl.src;
+      if (src && src.startsWith("data:")) {
+        return src;
+      }
+
+      // Try same-origin canvas draw
+      try {
+        const c = document.createElement("canvas");
+        c.width = targetEl.naturalWidth || targetEl.width;
+        c.height = targetEl.naturalHeight || targetEl.height;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(targetEl, 0, 0);
+        return c.toDataURL("image/png");
+      } catch (e) {
+        // Cross-origin: try background fetch
+        try {
+          const res = await chrome.runtime.sendMessage({
+            type: "FETCH_IMAGE_AS_BASE64",
+            url: src
+          });
+          if (res && res.success && res.base64) {
+            return res.base64;
+          }
+        } catch (fetchErr) {
+          // Fallback to screenshot capture
+        }
+      }
+      return await captureElementViaScreenshot(targetEl);
+    }
+
+    // 3. Iframe or container element (Bibi, MDViewer, etc.)
+    return await captureElementViaScreenshot(targetEl);
+  }
+
+  // ==========================================
+  // Translation Pipeline Execution
+  // ==========================================
 
   async function translateElement(targetEl) {
     const overlay = getOrCreateOverlay(targetEl);
@@ -265,12 +383,16 @@
       const data = response.data;
       overlay.translationData = data;
 
-      // Scale detected bubble coordinates from original image space to display canvas space
-      const naturalW = targetEl.naturalWidth || targetEl.width;
-      const naturalH = targetEl.naturalHeight || targetEl.height;
+      // Coordinate scaling from translated image space to display canvas space
       const rect = targetEl.getBoundingClientRect();
-      const scaleX = rect.width / Math.max(naturalW, 1);
-      const scaleY = rect.height / Math.max(naturalH, 1);
+      const tempImg = new Image();
+      await new Promise((resolve) => {
+        tempImg.onload = resolve;
+        tempImg.src = data.clean_image_base64 || base64Image;
+      });
+
+      const scaleX = rect.width / Math.max(tempImg.width, 1);
+      const scaleY = rect.height / Math.max(tempImg.height, 1);
 
       const scaledBubbles = data.bubbles.map((b) => {
         const [bx, by, bw, bh] = b.bbox;
@@ -295,18 +417,108 @@
   }
 
   async function translateAllVisiblePages() {
-    const images = Array.from(document.querySelectorAll("img, canvas")).filter((el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.height >= 400 && rect.top < window.innerHeight && rect.bottom > 0;
-    });
+    let candidates = findMangaReaderCandidates();
 
-    if (images.length === 0) {
-      alert("No active manga page detected in current viewport.");
-      return;
+    // If no candidate matched standard selectors, inspect general viewer containers
+    if (candidates.length === 0) {
+      const viewerContainers = Array.from(
+        document.querySelectorAll(
+          "iframe.bibi-frame, iframe, #viewer, .viewer, .mdviewer, app-root, .swiper-slide-active, main, [class*='reader']"
+        )
+      ).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width >= 250 && r.height >= 250 && r.bottom > 0 && r.top < window.innerHeight;
+      });
+
+      if (viewerContainers.length > 0) {
+        // Pick largest viewer container
+        viewerContainers.sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        candidates = [viewerContainers[0]];
+      }
     }
 
-    for (const el of images) {
+    if (candidates.length === 0) {
+      // Fallback: translate the main visible viewport area
+      candidates = [document.body];
+    }
+
+    for (const el of candidates) {
       await translateElement(el);
+    }
+  }
+
+  // ==========================================
+  // Interactive Page Picker Tool
+  // ==========================================
+
+  function toggleElementPicker() {
+    if (isPickingElement) {
+      disableElementPicker();
+    } else {
+      enableElementPicker();
+    }
+  }
+
+  function enableElementPicker() {
+    isPickingElement = true;
+    document.body.classList.add("mt-picker-active");
+
+    const highlightBox = document.createElement("div");
+    highlightBox.id = "mt-picker-highlight";
+    document.body.appendChild(highlightBox);
+
+    const onMouseMove = (e) => {
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      if (!target || target.closest("#manga-translator-floating-dock") || target.id === "mt-picker-highlight") {
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      highlightBox.style.top = `${rect.top + window.scrollY}px`;
+      highlightBox.style.left = `${rect.left + window.scrollX}px`;
+      highlightBox.style.width = `${rect.width}px`;
+      highlightBox.style.height = `${rect.height}px`;
+    };
+
+    const onClick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      disableElementPicker();
+
+      if (target && !target.closest("#manga-translator-floating-dock")) {
+        translateElement(target);
+      }
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        disableElementPicker();
+      }
+    };
+
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+
+    window.__mt_picker_cleanup = () => {
+      document.removeEventListener("mousemove", onMouseMove, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      highlightBox.remove();
+      document.body.classList.remove("mt-picker-active");
+      isPickingElement = false;
+    };
+  }
+
+  function disableElementPicker() {
+    if (window.__mt_picker_cleanup) {
+      window.__mt_picker_cleanup();
+      window.__mt_picker_cleanup = null;
     }
   }
 
@@ -326,6 +538,7 @@
             <span class="mt-status-dot" id="mt-status-indicator"></span>
             <span>Manga Local GPU</span>
           </div>
+          <button id="mt-pick-btn" class="mt-btn-icon" title="Select Manga Frame / Element Directly">🎯</button>
         </div>
         <div class="mt-dock-body">
           <button class="mt-btn-primary" id="mt-translate-btn">
@@ -353,20 +566,20 @@
 
     document.body.appendChild(dock);
 
-    // Event Listeners
-    const translateBtn = dock.querySelector("#mt-translate-btn");
-    translateBtn.addEventListener("click", () => {
+    dock.querySelector("#mt-translate-btn").addEventListener("click", () => {
       translateAllVisiblePages();
     });
 
-    const autoToggle = dock.querySelector("#mt-auto-toggle");
-    autoToggle.addEventListener("change", (e) => {
+    dock.querySelector("#mt-pick-btn").addEventListener("click", () => {
+      toggleElementPicker();
+    });
+
+    dock.querySelector("#mt-auto-toggle").addEventListener("change", (e) => {
       settings.autoTranslate = e.target.checked;
       chrome.storage.local.set({ settings });
     });
 
-    const renderModeSelect = dock.querySelector("#mt-render-mode");
-    renderModeSelect.addEventListener("change", (e) => {
+    dock.querySelector("#mt-render-mode").addEventListener("change", (e) => {
       settings.renderMode = e.target.value;
       chrome.storage.local.set({ settings });
       reapplyAllOverlays();
@@ -434,6 +647,7 @@
     let startX, startY, initialX, initialY;
 
     handle.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button") || e.target.closest("input")) return;
       isDragging = true;
       startX = e.clientX;
       startY = e.clientY;
@@ -458,7 +672,5 @@
     });
   }
 
-  // Run on start
   init();
 })();
-

@@ -1,6 +1,7 @@
 /**
  * Background Service Worker (Manifest V3)
  * Handles cross-origin image fetching to bypass canvas tainting/CORS,
+ * viewport screenshot capture for DRM/WebGL/iframe manga readers,
  * local server communication, and persistent user settings.
  */
 
@@ -28,7 +29,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     fetchImageAsBase64(message.url)
       .then((base64) => sendResponse({ success: true, base64 }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true; // Keep channel open for async response
+    return true;
+  }
+
+  if (message.type === "CAPTURE_VISIBLE_TAB") {
+    chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError || !dataUrl) {
+        sendResponse({
+          success: false,
+          error: chrome.runtime.lastError?.message || "Failed to capture visible tab."
+        });
+      } else {
+        sendResponse({ success: true, dataUrl });
+      }
+    });
+    return true;
   }
 
   if (message.type === "TRANSLATE_PAGE_API") {
@@ -101,4 +116,3 @@ async function checkBackendHealth(backendUrl) {
   }
   return await response.json();
 }
-
